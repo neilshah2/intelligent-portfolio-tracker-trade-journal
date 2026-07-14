@@ -1,6 +1,5 @@
 /**
  * TRADE JOURNAL — companion module to the Holdings Tracker (v7)
- * Spreadsheet: "Golfing"
  *
  * WHAT THIS IS
  *   Holdings Tracker (v7) tracks open positions and UNREALIZED gain/loss.
@@ -11,7 +10,7 @@
  *   brokerages, parsed by the same Claude API key.
  *
  * SETUP (one-time, ~2 minutes)
- *   1. Open Extensions → Apps Script on the "Golfing" spreadsheet.
+ *   1. Open Extensions → Apps Script on your portfolio spreadsheet.
  *   2. Click the "+" next to Files → Script → name it "TradeJournal" →
  *      paste this entire file in → Save.
  *   3. Open your existing Code.gs (the v7 file) and find the onOpen()
@@ -717,7 +716,7 @@ function showNotesDialog() {
 </style>
 
 <label>Talk through your trades (dictate straight into this box)</label>
-<textarea id="talk" placeholder="e.g. 'SHAZ was the Leopold 19.9% stake play, sold when momentum died. LAC was a tip from a friend, cut it at a loss, lesson: no more tips without my own research. The LUNR calls were an earnings lotto ticket, expired worthless...'"></textarea>
+<textarea id="talk" placeholder="e.g. 'AAPL was a momentum play off the product launch, sold when it stalled. XYZ was a tip from a friend, cut it at a loss, lesson: no more tips without my own research. The SPY puts were an earnings hedge, expired worthless...'"></textarea>
 <div class="hint">Mention tickers or company names in any order — Claude figures out which journal rows you mean. Trades you don't mention are left alone. On Mac, double-tap the Fn/globe key to dictate.</div>
 <div class="btnrow">
   <button class="ai" onclick="match()">🤖 Match with AI</button>
