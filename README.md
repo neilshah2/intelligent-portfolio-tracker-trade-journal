@@ -55,4 +55,4 @@ This is a personal tracking tool, not financial or tax advice. Verify realized-g
 
 ## License
 
-[MIT](LICENSE)
+[AGPL-3.0](LICENSE)
