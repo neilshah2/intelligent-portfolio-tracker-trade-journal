@@ -18,14 +18,23 @@ Built as two Google Apps Script modules bound to a single spreadsheet:
 - **Trade summary on demand** — win rate, net/gross P&L, avg win/loss, short- vs long-term split, worst tickers — over any lookback window (30/90/180/365 days, YTD, all-time).
 - **Security-conscious by design** — your Anthropic API key is stored in Apps Script `PropertiesService` (server-side script properties), never in the sheet, the code, or this repo. Your financial data never leaves Google + Anthropic's API.
 
-## Setup
+## Quick start (~5 minutes)
 
-1. Make a copy of the template spreadsheet: **[link coming soon]** *(or start from any blank Google Sheet)*
-2. Open **Extensions → Apps Script**.
-3. Paste `src/Code.gs` into the default `Code.gs` file.
-4. Add a second script file named `TradeJournal` and paste in `src/TradeJournal.gs`.
-5. Save, reload the spreadsheet — you'll see **📊 Holdings** and **📉 Trade Journal** menus.
-6. Get an Anthropic API key at [console.anthropic.com](https://console.anthropic.com) and set it via **Holdings → Settings → Set Anthropic API Key**.
+1. **Get the template:** upload [`template/portfolio-tracker-template.xlsx`](template/portfolio-tracker-template.xlsx) to Google Drive and open it with Google Sheets (**File → Save as Google Sheets**). It ships with fictional example data and an Instructions tab.
+2. Open **Extensions → Apps Script**. Paste [`src/Code.gs`](src/Code.gs) into the default `Code.gs` file.
+3. Add a second script file named `TradeJournal` and paste in [`src/TradeJournal.gs`](src/TradeJournal.gs). Save.
+4. Reload the spreadsheet — you'll see **📊 Holdings** and **📉 Trade Journal** menus.
+5. Set your API key (below), then try **Holdings → Update Account(s)…** with a broker export or screenshot.
+
+## What you need to set
+
+| Setting | Where | Notes |
+|---|---|---|
+| **Anthropic API key** (required) | Holdings → Settings → Set Anthropic API Key | Create one at [console.anthropic.com](https://console.anthropic.com) (API keys → Create Key). Stored in Apps Script Script Properties — never in the sheet or this repo. The default model is Claude Haiku, so a typical import costs well under a cent. |
+| **Your account names** | Row 1 of the holdings tab, columns F onward | Rename `Brokerage 1` / `Roth IRA` / `Brokerage 2` to your real accounts, or use Holdings → Add Account…. These names become the choices in every import dialog. |
+| **Your categories** | The colored section rows | Rename/add via Holdings → Add Section…. Keep `Liquid` and `Small Themes/Other` — the AI auto-categorizer falls back to them. Defaults live in `CONFIG.DEFAULT_SECTIONS` in `Code.gs`. |
+| **Tab naming** | Holdings tabs | Must be `MMMyy` (e.g. `Jan26`). Holdings → Start New Month… rolls a snapshot forward. Custom-named tabs can be whitelisted in `CONFIG.EXTRA_HOLDINGS_TABS`. |
+| **Minimum position size** (optional) | `CONFIG.MIN_POSITION_VALUE` in `Code.gs` | Stock positions under this current value (default $1,000) are ignored on import; options are exempt. |
 
 Detailed usage notes live in the header comments of each script file.
 
