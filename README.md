@@ -9,6 +9,8 @@ Built as two Google Apps Script modules bound to a single spreadsheet:
 | **Holdings Tracker** | [`src/Code.gs`](src/Code.gs) | Open positions and unrealized gain/loss across multiple brokerage accounts. Paste a positions export or drop a screenshot; account columns are detected/created automatically. |
 | **Trade Journal** | [`src/TradeJournal.gs`](src/TradeJournal.gs) | Realized gain/loss log of closed trades (specific-lot basis) with an AI-assisted thesis / exit-notes journal and a configurable-window performance summary. |
 
+<img src="docs/images/demo.gif" width="720" alt="Setup and workflow demo animation">
+
 ## Features
 
 - **Parse anything the broker gives you** — pasted text, CSV/TSV drag-and-drop, or screenshots, from any brokerage. Claude (Anthropic API) normalizes it all to structured rows; you review every parsed row in a dialog before anything is written.
@@ -59,6 +61,19 @@ Built as two Google Apps Script modules bound to a single spreadsheet:
 | **Minimum position size** (optional) | `CONFIG.MIN_POSITION_VALUE` in `Code.gs` | Stock positions under this current value (default $1,000) are ignored on import; options are exempt. |
 
 Detailed usage notes live in the header comments of each script file.
+
+## The Trade Journal
+
+Closed trades get their own log: **📉 Trade Journal → Log Closed Trades…** parses your broker's realized gain/loss report the same way (paste, CSV, or screenshot). Re-importing an overlapping report is safe — rows already in the journal are skipped automatically, and the dialog shows the last journaled close date so you know how far back to capture:
+
+<img src="docs/images/09-trade-journal-menu.png" width="560" alt="Trade Journal menu">
+<img src="docs/images/10-log-trades-parsed.png" width="560" alt="Log Closed Trades with parsed results">
+
+## Sharing your sheet with others
+
+- **To give someone their own tracker (recommended):** share your sheet (or a sanitized copy) as **Viewer** and have them use **File → Make a copy**. The Apps Script code is bound to the spreadsheet and **copies with it** — they get the full app instantly, no pasting. Script Properties do **not** copy, so your API key stays private; they set their own key on their copy.
+- **To collaborate on one sheet:** share with **Editor** access. The menus work for them too (each person authorizes on their own first use) — but be aware they'll be using **your** Anthropic API key, and any editor can open Extensions → Apps Script and read it. Only do this with people you'd hand the key to.
+- **Viewer access alone** can't run the scripts — viewing the numbers is fine, importing isn't.
 
 ## Screenshots
 
