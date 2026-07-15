@@ -20,11 +20,33 @@ Built as two Google Apps Script modules bound to a single spreadsheet:
 
 ## Quick start (~5 minutes)
 
-1. **Get the template:** upload [`template/portfolio-tracker-template.xlsx`](template/portfolio-tracker-template.xlsx) to Google Drive and open it with Google Sheets (**File → Save as Google Sheets**). It ships with fictional example data and an Instructions tab.
-2. Open **Extensions → Apps Script**. Paste [`src/Code.gs`](src/Code.gs) into the default `Code.gs` file.
-3. Add a second script file named `TradeJournal` and paste in [`src/TradeJournal.gs`](src/TradeJournal.gs). Save.
-4. Reload the spreadsheet — you'll see **📊 Holdings** and **📉 Trade Journal** menus.
-5. Set your API key (below), then try **Holdings → Update Account(s)…** with a broker export or screenshot.
+**1. Get the template.** Upload [`template/portfolio-tracker-template.xlsx`](template/portfolio-tracker-template.xlsx) to Google Drive and open it with Google Sheets (**File → Save as Google Sheets**). It ships with fictional example data and an Instructions tab.
+
+**2. Open the script editor** via **Extensions → Apps Script**:
+
+<img src="docs/images/01-open-apps-script.png" width="640" alt="Extensions menu → Apps Script">
+
+**3. Paste in the Holdings Tracker.** The editor opens with an empty stub — replace it with the full contents of [`src/Code.gs`](src/Code.gs):
+
+<img src="docs/images/02-empty-editor.png" width="480" alt="Empty Apps Script editor">
+<img src="docs/images/03-paste-code.png" width="640" alt="Code.gs pasted into the editor">
+
+**4. Add the Trade Journal.** Click **＋ next to Files → Script**, name it `TradeJournal`, and paste in [`src/TradeJournal.gs`](src/TradeJournal.gs). Save.
+
+<img src="docs/images/04-add-tradejournal-file.png" width="420" alt="Files + → Script to add TradeJournal">
+
+**5. Reload the spreadsheet.** Two new menus appear — **📊 Holdings** and **📉 Trade Journal**:
+
+<img src="docs/images/07-holdings-menu.png" width="640" alt="Holdings menu on the sheet">
+
+**6. Authorize on first run.** The first time you use a menu item, Google shows an "unverified app" warning — expected, since *you* are the developer of a private script. Click **Advanced → Go to Portfolio Tracker (unsafe)**, then grant the three permissions (edit this spreadsheet, call the Anthropic API, show dialogs):
+
+<img src="docs/images/05-unverified-warning.png" width="480" alt="Google unverified app warning">
+<img src="docs/images/06-grant-permissions.png" width="420" alt="Permission grant screen">
+
+**7. Set your API key** (table below), then try **Holdings → Update Account(s)…** — pick the account, paste a broker export or drop a screenshot, and hit **Parse with AI**:
+
+<img src="docs/images/08-update-accounts-dialog.png" width="520" alt="Update Accounts import dialog">
 
 ## What you need to set
 
