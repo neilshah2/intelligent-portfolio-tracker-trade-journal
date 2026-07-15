@@ -46,7 +46,15 @@ Built as two Google Apps Script modules bound to a single spreadsheet:
 <img src="docs/images/05-unverified-warning.png" width="480" alt="Google unverified app warning">
 <img src="docs/images/06-grant-permissions.png" width="420" alt="Permission grant screen">
 
-**7. Set your API key** (table below), then try **Holdings → Update Account(s)…** — pick the account, paste a broker export or drop a screenshot, and hit **Parse with AI**:
+**7. Rename the accounts to yours.** Account names live in **row 1** of the holdings tab, starting at column **F**. Click a header cell and type over it — `Brokerage 1` → `Schwab`, `Roth IRA` → `My Roth`, and so on:
+
+<img src="docs/images/11-account-headers.png" width="720" alt="Row 1 header cells holding the account names">
+
+- Every import dialog's account dropdown picks the new names up automatically, and the hidden cost-basis helper re-syncs its headers on the next menu action — your cost data stays aligned.
+- **Avoid these words in account names:** *total, sum, value, qty, percentage, comment, note, memo* (and the `%` sign). The script treats headers containing them as calculated columns and will skip that account.
+- To **add** an account, use **Holdings → Add Account…** instead of inserting a column manually, so the helper sheet gets the matching column.
+
+**8. Set your API key** (table below), then try **Holdings → Update Account(s)…** — pick the account, paste a broker export or drop a screenshot, and hit **Parse with AI**:
 
 <img src="docs/images/08-update-accounts-dialog.png" width="520" alt="Update Accounts import dialog">
 
@@ -61,16 +69,6 @@ Built as two Google Apps Script modules bound to a single spreadsheet:
 | **Minimum position size** (optional) | `CONFIG.MIN_POSITION_VALUE` in `Code.gs` | Stock positions under this current value (default $1,000) are ignored on import; options are exempt. |
 
 Detailed usage notes live in the header comments of each script file.
-
-### Renaming your accounts
-
-Account names live in **row 1** of the holdings tab, starting at column **F**. Click a header cell and type over it — `Brokerage 1` → `Schwab`, `Roth IRA` → `My Roth`, and so on:
-
-<img src="docs/images/11-account-headers.png" width="720" alt="Row 1 header cells holding the account names">
-
-- Every import dialog's account dropdown picks the new names up automatically, and the hidden cost-basis helper re-syncs its headers on the next menu action — your cost data stays aligned.
-- **Avoid these words in account names:** *total, sum, value, qty, percentage, comment, note, memo* (and the `%` sign). The script treats headers containing them as calculated columns and will skip that account.
-- To **add** an account, use **Holdings → Add Account…** instead of inserting a column manually, so the helper sheet gets the matching column.
 
 ## The Trade Journal
 
