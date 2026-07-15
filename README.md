@@ -77,15 +77,19 @@ Closed trades get their own log: **📉 Trade Journal → Log Closed Trades…**
 <img src="docs/images/09-trade-journal-menu.png" width="560" alt="Trade Journal menu">
 <img src="docs/images/10-log-trades-parsed.png" width="560" alt="Log Closed Trades with parsed results">
 
+Then talk through your trades with **📉 Trade Journal → Add Thesis / Exit Notes (AI)…** — one freeform dump, in any order; the AI matches each remark to the right journal row.
+
+> **💡 Dictation tip:** Google Sheets has **no microphone button** of its own — voice input comes from your operating system, so don't go looking for a mic icon in the dialog.
+> - **Mac (Chrome, Brave, Safari — any browser):** click into the notes box, then use the menu bar: **Edit → Start Dictation**. Shortcut: press the **🎤 / Fn (globe) key twice**. (First time only: enable it in System Settings → Keyboard → Dictation.)
+> - **Windows:** click into the box and press **Win + H**.
+>
+> Speak naturally, punctuation and filler included — the AI cleans up dictation artifacts when it writes the journal notes.
+
 ## Sharing your sheet with others
 
 - **To give someone their own tracker (recommended):** share your sheet (or a sanitized copy) as **Viewer** and have them use **File → Make a copy**. The Apps Script code is bound to the spreadsheet and **copies with it** — they get the full app instantly, no pasting. Script Properties do **not** copy, so your API key stays private; they set their own key on their copy.
 - **To collaborate on one sheet:** share with **Editor** access. The menus work for them too (each person authorizes on their own first use) — but be aware they'll be using **your** Anthropic API key, and any editor can open Extensions → Apps Script and read it. Only do this with people you'd hand the key to.
 - **Viewer access alone** can't run the scripts — viewing the numbers is fine, importing isn't.
-
-## Screenshots
-
-*(coming soon)*
 
 ## Architecture notes
 
