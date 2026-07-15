@@ -62,6 +62,16 @@ Built as two Google Apps Script modules bound to a single spreadsheet:
 
 Detailed usage notes live in the header comments of each script file.
 
+### Renaming your accounts
+
+Account names live in **row 1** of the holdings tab, starting at column **F**. Click a header cell and type over it — `Brokerage 1` → `Schwab`, `Roth IRA` → `My Roth`, and so on:
+
+<img src="docs/images/11-account-headers.png" width="720" alt="Row 1 header cells holding the account names">
+
+- Every import dialog's account dropdown picks the new names up automatically, and the hidden cost-basis helper re-syncs its headers on the next menu action — your cost data stays aligned.
+- **Avoid these words in account names:** *total, sum, value, qty, percentage, comment, note, memo* (and the `%` sign). The script treats headers containing them as calculated columns and will skip that account.
+- To **add** an account, use **Holdings → Add Account…** instead of inserting a column manually, so the helper sheet gets the matching column.
+
 ## The Trade Journal
 
 Closed trades get their own log: **📉 Trade Journal → Log Closed Trades…** parses your broker's realized gain/loss report the same way (paste, CSV, or screenshot). Re-importing an overlapping report is safe — rows already in the journal are skipped automatically, and the dialog shows the last journaled close date so you know how far back to capture:
