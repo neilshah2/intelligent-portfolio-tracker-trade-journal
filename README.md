@@ -51,7 +51,7 @@ Built as two Google Apps Script modules bound to a single spreadsheet:
 <img src="docs/images/11-account-headers.png" width="720" alt="Row 1 header cells holding the account names">
 
 - Every import dialog's account dropdown picks the new names up automatically, and the hidden cost-basis helper re-syncs its headers on the next menu action — your cost data stays aligned.
-- **Avoid these words in account names:** *total, sum, value, qty, percentage, comment, note, memo* (and the `%` sign). The script treats headers containing them as calculated columns and will skip that account.
+- Account names are matched exactly — only the script's own Total columns ("Total Qty", "Total Value $", "% of Portfolio") are skipped, so names like "Total Return Fund" or "Value Partners" work fine.
 - To **add** an account, use **Holdings → Add Account…** instead of inserting a column manually, so the helper sheet gets the matching column.
 
 **8. Set your API key** (table below), then try **Holdings → Update Account(s)…** — pick the account, paste a broker export or drop a screenshot, and hit **Parse with AI**:

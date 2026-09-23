@@ -1,5 +1,5 @@
 /**
- * HOLDINGS TRACKER — Google Apps Script v7 (Smart Categorization & Bug Fix)
+ * HOLDINGS TRACKER — Google Apps Script v8 (Batch I/O & Bug Fixes)
  *
  * Tracks open positions and unrealized gain/loss across multiple brokerage
  * accounts, on monthly snapshot tabs. Paste broker exports or screenshots;
@@ -18,6 +18,33 @@
  *     default; list any custom-named tabs here (e.g. a family portfolio tab).
  *   • MIN_POSITION_VALUE — stock/ETF positions below this current value are
  *     ignored on import and removed by Apply Cleanup. Options are exempt.
+ *
+ * v8 changes from v7:
+ * • Optional TradeJournal: onOpen() no longer throws when TradeJournal.gs is
+ *   absent — the Holdings menu builds regardless (the file's own header calls
+ *   the journal "optional but recommended"; now it actually is).
+ * • Batched Claude categorization: the Bulk Add dialog used to fire one
+ *   synchronous API call PER unknown ticker while rendering, hanging or
+ *   timing out on large imports. Unknown tickers are now categorized in a
+ *   single API call returning a JSON map.
+ * • Add Position merges duplicates: adding a ticker that already exists now
+ *   merges into the existing row (qty added to the chosen account) instead of
+ *   creating a second row for the same ticker.
+ * • Account-column detection no longer uses substring matching: headers are
+ *   only skipped when they exactly match the script's own generated Total
+ *   columns, so real accounts named e.g. "Total Return Fund" work again.
+ * • Batched sheet I/O: applyBatchUpdate / applyCostBasisFormulas /
+ *   applyRule1And2 now read each column once and flush writes in bulk instead
+ *   of one API call per cell — large pastes no longer flirt with the
+ *   6-minute Apps Script execution limit.
+ * • applyRule1And2 no longer deletes every priced row when a tab has zero
+ *   account columns (value can't be computed, so Rule 1 is skipped).
+ * • FX prompt now states the conversion direction explicitly
+ *   (USD = foreign ÷ rate) instead of leaving it to inference.
+ * • Model override: set the Script Property API_MODEL_OVERRIDE to pin a
+ *   different Anthropic model without editing code.
+ * • Bulk Add dialog alerts clearly when a tab has no sections yet, instead of
+ *   silently skipping every position.
  *
  * v7 changes from v6:
  * • Stale Row Bug Fix: Sections are dynamically re-calculated inside loops to prevent rows from inserting above headers.
@@ -86,7 +113,8 @@ function onOpen() {
       .addItem('Show Helper Sheet',      'showHelperSheet')
       .addItem('Hide Helper Sheet',      'hideHelperSheet'))
     .addToUi();
-  addTradeJournalMenu(ui);
+  // TradeJournal.gs is optional — a missing file must not kill the whole menu.
+  if (typeof addTradeJournalMenu === 'function') addTradeJournalMenu(ui);
 }
 
 // =============================================================================
@@ -222,15 +250,17 @@ function getAccountColumns(sheet) {
   const headers = sheet.getRange(CONFIG.HEADER_ROW, CONFIG.FIRST_ACCOUNT_COL, 1, lastCol - CONFIG.FIRST_ACCOUNT_COL + 1).getValues()[0];
   const out = {};
 
+  // Headers this script itself writes — never treat them as accounts.
+  // (Previously this used substring matching, which wrongly skipped real
+  // accounts named e.g. "Total Return Fund" or "Value Partners".)
+  const GENERATED = ['Total Qty', 'Total Value $', '% of Portfolio'];
+
   headers.forEach((n, i) => {
     const s = String(n || '').trim();
     const lower = s.toLowerCase();
-    const isCalculatedColumn = lower.includes('total') || lower.includes('sum') ||
-                           lower.includes('%') || lower.includes('percentage') ||
-                           lower.includes('value') || lower.includes('qty') ||
-                           lower.includes('comment') || lower.includes('note') || lower.includes('memo');
+    const isGenerated = GENERATED.some(g => g.toLowerCase() === lower);
 
-    if (s && !isCalculatedColumn) {
+    if (s && !isGenerated) {
       out[s] = CONFIG.FIRST_ACCOUNT_COL + i;
     }
   });
@@ -417,6 +447,18 @@ function findOrAddHelperRow(helper, ticker) {
   return newRow;
 }
 
+function getHelperAvgCost(mainSheet, ticker, accountName) {
+  const ss = mainSheet.getParent();
+  const helper = ss.getSheetByName(helperSheetName(mainSheet.getName()));
+  if (!helper) return null;
+  const col = getAccountColumns(mainSheet)[accountName];
+  if (!col) return null;
+  const row = findHelperRow(helper, ticker);
+  if (row < 0) return null;
+  const v = helper.getRange(row, col).getValue();
+  return (typeof v === 'number' && !isNaN(v)) ? v : null;
+}
+
 function setHelperAvgCost(mainSheet, ticker, accountName, cost) {
   const helper = getOrCreateHelperSheet(mainSheet);
   const accounts = getAccountColumns(mainSheet);
@@ -449,11 +491,19 @@ function applyCostBasisFormulas(mainSheet) {
   const lastAcct  = accountCols[accountCols.length - 1];
   const span      = lastAcct - firstAcct + 1;          // columns to read in one block
   const lastRow   = mainSheet.getLastRow();
+  if (lastRow < 2) return;
 
   // ---- Batch read: main-sheet quantities for the whole account block ----
-  const mainQty = lastRow >= 2
-    ? mainSheet.getRange(2, firstAcct, lastRow - 1, span).getValues()
-    : [];
+  const mainQty = mainSheet.getRange(2, firstAcct, lastRow - 1, span).getValues();
+
+  // ---- Batch read: column C (avg cost) values, formulas, notes, backgrounds.
+  //      Staged in memory and flushed once at the end instead of one API
+  //      call per cell per row. ----
+  const cRange    = mainSheet.getRange(2, CONFIG.AVG_COST_COL, lastRow - 1, 1);
+  const cFormulas = cRange.getFormulas();
+  const cVals     = cRange.getValues();
+  const cNotes    = cRange.getNotes();
+  const cBgs      = cRange.getBackgrounds();
 
   // ---- Batch read: helper tickers + cost block; build an in-memory lookup ----
   const helperLast = helper.getLastRow();
@@ -471,10 +521,17 @@ function applyCostBasisFormulas(mainSheet) {
     if (key) helperByTicker[key] = { sheetRow: i + 2, costs: helperCostVals[i].slice() };
   }
 
+  const WARN_MISSING = missingCount => '⚠️ Missing cost basis for ' + missingCount + ' account(s) holding '
+    + 'this position. Those shares default to the weighted-average cost of the '
+    + 'accounts that DO have a cost.';
+  const ERR_NO_COST = '⛔ No cost basis recorded for any account holding this position. '
+    + 'Average cost / gain $ / gain % cannot be computed until at least one account '
+    + 'has a cost. Add it via Update Account(s)… or directly in the helper sheet.';
+
   for (const r of rows) {
-    const cell            = mainSheet.getRange(r.row, CONFIG.AVG_COST_COL);
-    const existingFormula = cell.getFormula();
-    const existingValue   = cell.getValue();
+    const idx             = r.row - 2;
+    const existingFormula = cFormulas[idx][0];
+    const existingValue   = cVals[idx][0];
     const canonTicker     = canonicalLabel(r.ticker);
     const qtyRow          = mainQty[r.row - 2] || [];
 
@@ -514,32 +571,33 @@ function applyCostBasisFormulas(mainSheet) {
       }
     }
 
-    // ---- Write C as a VALUE; set the warning state. ----
+    // ---- Stage the C value / note / background; flushed in bulk below. ----
     if (heldQty > 0 && knownQty > 0) {
-      cell.setValue(knownWeighted / knownQty);        // weighted avg of known accts
+      cVals[idx][0] = knownWeighted / knownQty;        // weighted avg of known accts
       if (missingCount > 0) {
-        cell.setNote('⚠️ Missing cost basis for ' + missingCount + ' account(s) holding '
-          + 'this position. Those shares default to the weighted-average cost of the '
-          + 'accounts that DO have a cost.');
-        cell.setBackground('#fff2cc');                // yellow: fell back
+        cNotes[idx][0] = WARN_MISSING(missingCount);
+        cBgs[idx][0] = '#fff2cc';                     // yellow: fell back
       } else {
-        cell.clearNote();
-        cell.setBackground(null);
+        cNotes[idx][0] = null;
+        cBgs[idx][0] = null;
       }
     } else if (heldQty > 0) {
       // Holds the position but no cost recorded in ANY account -> cannot compute.
-      cell.clearContent();
-      cell.setNote('⛔ No cost basis recorded for any account holding this position. '
-        + 'Average cost / gain $ / gain % cannot be computed until at least one account '
-        + 'has a cost. Add it via Update Account(s)… or directly in the helper sheet.');
-      cell.setBackground('#f4cccc');                  // red: cannot compute
+      cVals[idx][0] = '';
+      cNotes[idx][0] = ERR_NO_COST;
+      cBgs[idx][0] = '#f4cccc';                       // red: cannot compute
     } else {
       // Not held (qty 0 everywhere) -> nothing to value.
-      cell.clearContent();
-      cell.clearNote();
-      cell.setBackground(null);
+      cVals[idx][0] = '';
+      cNotes[idx][0] = null;
+      cBgs[idx][0] = null;
     }
   }
+
+  // ---- One write per attribute for the whole column. ----
+  cRange.setValues(cVals);
+  cRange.setNotes(cNotes);
+  cRange.setBackgrounds(cBgs);
 }
 
 function showHelperSheet() {
@@ -655,6 +713,13 @@ function getApiKey() {
   return key;
 }
 
+// Model override: set the Script Property API_MODEL_OVERRIDE to pin a
+// different Anthropic model without editing code.
+function getApiModel() {
+  const override = PropertiesService.getScriptProperties().getProperty('API_MODEL_OVERRIDE');
+  return override || CONFIG.API_MODEL;
+}
+
 function buildSystemPrompt() {
   const rates = getFxRates();
   const rateLines = Object.entries(rates).filter(([k]) => k !== 'USD')
@@ -685,8 +750,9 @@ CASH/SWEEP POSITIONS:
 
 PRICE (always in USD):
 - Current market price per share/contract
-- Convert foreign currency to USD:
+- Convert foreign currency to USD by DIVIDING by the rate below:
 ${rateLines}
+  Conversion: USD amount = foreign amount ÷ rate (e.g. €920 at 0.92 → $1,000). Never multiply by the rate.
 
 AVG_COST (always in USD, weighted across sub-accounts):
 - avg_cost = SUM(qty_i × cost_i) / SUM(qty_i)
@@ -711,7 +777,7 @@ Return [] if nothing parseable. Output JUST the JSON array.`;
 function callClaudeAPI(messages) {
   const apiKey = getApiKey();
   const payload = {
-    model: CONFIG.API_MODEL,
+    model: getApiModel(),
     max_tokens: 4096,
     system: buildSystemPrompt(),
     messages: [{ role: 'user', content: messages }]
@@ -1046,6 +1112,33 @@ function applyBatchUpdate(requestedAccounts, pastedText, fullSnapshot, updateAvg
 
   getOrCreateHelperSheet(sheet);
 
+  // ---- Batched reads: one API call per column instead of one per cell. ----
+  const lastRow = sheet.getLastRow();
+  const colA = lastRow >= 2
+    ? sheet.getRange(2, CONFIG.TICKER_COL, lastRow - 1, 1).getValues()
+    : [];
+  // canonical label -> row (first occurrence wins, same as findTickerRow)
+  const tickerRowMap = {};
+  for (let i = 0; i < colA.length; i++) {
+    const cell = String(colA[i][0] || '').trim();
+    if (!cell) continue;
+    const key = canonicalLabel(cell);
+    if (!(key in tickerRowMap)) tickerRowMap[key] = i + 2;
+  }
+  const priceVals = lastRow >= 2
+    ? sheet.getRange(2, CONFIG.PRICE_COL, lastRow - 1, 1).getValues()
+    : [];
+  const acctCols = Object.values(accounts).sort((a, b) => a - b);
+  const colToK = {};
+  acctCols.forEach((c, i) => { colToK[c] = i; });
+  let qtyBlock = [];
+  if (lastRow >= 2 && acctCols.length > 0) {
+    const firstAcct = acctCols[0];
+    const span = acctCols[acctCols.length - 1] - firstAcct + 1;
+    qtyBlock = sheet.getRange(2, firstAcct, lastRow - 1, span).getValues();
+  }
+  const touchedCols = {};
+
   const log = [];
   const seenInAccount = {};
   requestedAccounts.forEach(a => seenInAccount[a] = new Set());
@@ -1062,8 +1155,8 @@ function applyBatchUpdate(requestedAccounts, pastedText, fullSnapshot, updateAvg
     // so fullSnapshot clearing works correctly even for filtered/new positions.
     if (seenInAccount[p.account]) seenInAccount[p.account].add(p.label);
 
-    const row = findTickerRow(sheet, p.label);
-    if (row === -1) {
+    const row = tickerRowMap[canonicalLabel(p.label)];
+    if (row === undefined) {
       // For new positions: options bypass the value filter (current mkt value of a
       // deep OTM option is irrelevant — what matters is you own it / paid for it).
       // For stocks/ETFs, keep the $1,000 current-value floor.
@@ -1080,8 +1173,10 @@ function applyBatchUpdate(requestedAccounts, pastedText, fullSnapshot, updateAvg
       continue;
     }
 
-    sheet.getRange(row, CONFIG.PRICE_COL).setValue(p.price);
-    sheet.getRange(row, col).setValue(p.qty);
+    // Stage the writes in memory; flushed in bulk below.
+    priceVals[row - 2][0] = p.price;
+    qtyBlock[row - 2][colToK[col]] = p.qty;
+    touchedCols[col] = true;
     if (updateAvgCost && p.avgCost !== null) {
       setHelperAvgCost(sheet, p.label, p.account, p.avgCost);
       log.push(`✓ [${p.account}] ${p.label} → $${p.price}, qty ${p.qty}, avg $${p.avgCost}`);
@@ -1092,20 +1187,34 @@ function applyBatchUpdate(requestedAccounts, pastedText, fullSnapshot, updateAvg
   }
 
   if (fullSnapshot) {
-    const all = getAllPositionRows(sheet);
-    for (const r of all) {
-      const canon = canonicalLabel(r.ticker);
+    for (let i = 0; i < colA.length; i++) {
+      const t = String(colA[i][0] || '').trim();
+      const px = priceVals[i] ? priceVals[i][0] : null;
+      if (!t || px === '' || px === null) continue; // same filter as getAllPositionRows
+      const canon = canonicalLabel(t);
       for (const acct of requestedAccounts) {
-        if (accounts[acct] && seenInAccount[acct] && !seenInAccount[acct].has(canon)) {
-          const col = accounts[acct];
-          const cell = sheet.getRange(r.row, col);
-          if (cell.getValue() !== '' && cell.getValue() !== null) {
-            cell.clearContent();
-            setHelperAvgCost(sheet, canon, acct, null);
-            log.push(`• cleared ${r.ticker} from ${acct}`);
-          }
+        const col = accounts[acct];
+        if (!col || !seenInAccount[acct] || seenInAccount[acct].has(canon)) continue;
+        const k = colToK[col];
+        const cur = qtyBlock[i][k];
+        if (cur !== '' && cur !== null && cur !== undefined) {
+          qtyBlock[i][k] = '';
+          touchedCols[col] = true;
+          setHelperAvgCost(sheet, canon, acct, null);
+          log.push(`• cleared ${t} from ${acct}`);
         }
       }
+    }
+  }
+
+  // ---- Batched flush: one setValues per touched column. ----
+  if (lastRow >= 2) {
+    sheet.getRange(2, CONFIG.PRICE_COL, lastRow - 1, 1).setValues(priceVals);
+    for (const cStr of Object.keys(touchedCols)) {
+      const c = Number(cStr);
+      const k = colToK[c];
+      const colVals = qtyBlock.map(qrow => [qrow[k]]);
+      sheet.getRange(2, c, lastRow - 1, 1).setValues(colVals);
     }
   }
 
@@ -1130,30 +1239,40 @@ function showBulkAddDialog(tickersJson) {
   const tickers = JSON.parse(tickersJson);
   const sections = getSectionRows(sheet).map(s => s.name);
   const accounts = Object.keys(getAccountColumns(sheet));
+  if (!sections.length) {
+    SpreadsheetApp.getUi().alert('No sections on this tab yet. Use Holdings → Add Section… to create one first.');
+    return;
+  }
   const sectionOpts = sections.map(s => `<option>${s}</option>`).join('');
 
   // Create mapping of historical base tickers to their sections
   const tickerMap = getTickerSectionMap(sheet);
+
+  const LIQUID_TICKERS = ['CASH', 'BIL', 'SHV', 'CORE', 'FDRXX', 'SPAXX', 'FZFXX', 'SGOV'];
+  const isLiquidBase = base => LIQUID_TICKERS.includes(base) || base.startsWith('CORE') || base.startsWith('FDRXX');
+
+  // Pre-resolve each ticker: liquid → 'Liquid', known → historical section,
+  // otherwise queue it for ONE batched Claude call (not one call per ticker).
+  const preResolved = tickers.map(t => {
+    const base = getBaseTicker(t.label);
+    if (isLiquidBase(base)) return 'Liquid';
+    if (tickerMap[base]) return tickerMap[base];
+    return null;
+  });
+  const needClaude = [...new Set(
+    tickers.map((t, i) => (preResolved[i] === null ? getBaseTicker(t.label) : null)).filter(Boolean)
+  )];
+  const claudeMap = getCategoriesFromClaude(needClaude, sections);
 
   const rows = tickers.map((t, i) => {
     const displayQty = t.isOption ? t.qty / 100 : t.qty;
     const ac = t.avgCost !== null ? t.avgCost : '';
     const rowAcctOpts = accounts.map(a => `<option${a === t.account ? ' selected' : ''}>${a}</option>`).join('');
 
-    // Auto-select category based on historical memory
-      const base = getBaseTicker(t.label);
-      let defaultSec = tickerMap[base];
-
-      const LIQUID_TICKERS = ['CASH', 'BIL', 'SHV', 'CORE', 'FDRXX', 'SPAXX', 'FZFXX', 'SGOV'];
-      if (LIQUID_TICKERS.includes(base) || base.startsWith('CORE') || base.startsWith('FDRXX')) {
-        defaultSec = 'Liquid';
-      } else if (!defaultSec) {
-        // If it's not liquid and not in our history, ask Claude!
-        defaultSec = getCategoryFromClaude(base, sections);
-      }
-
-      // Final fallback just in case
-      if (!defaultSec) defaultSec = sections[0];
+    // Auto-select category: historical memory → batched Claude suggestion → fallback.
+    const base = getBaseTicker(t.label);
+    let defaultSec = preResolved[i] || claudeMap[base] || 'Small Themes/Other';
+    if (!sections.includes(defaultSec)) defaultSec = sections[0];
     const rowSecOpts = sections.map(s => `<option${s === defaultSec ? ' selected' : ''}>${s}</option>`).join('');
 
     return `<tr style="border-bottom:1px solid #eee;">
@@ -1378,9 +1497,40 @@ function applyAddPosition(v) {
   const label = canonicalLabel(v.ticker);
   const isOpt = isOptionLabel(label);
   const storedQty = isOpt ? v.qty * 100 : v.qty;
-  if (v.price * storedQty < CONFIG.MIN_POSITION_VALUE) {
+  if (!v.price || isNaN(v.price) || !storedQty || isNaN(storedQty)) {
+    return { ok: false, message: 'Enter a valid price and quantity.' };
+  }
+  // Options bypass the $1,000 floor (same as the batch import path) — a deep
+  // OTM option's market value is irrelevant; what matters is you own it.
+  if (!isOpt && v.price * storedQty < CONFIG.MIN_POSITION_VALUE) {
     return { ok: false, message: `Position value $${(v.price*storedQty).toFixed(2)} < $${CONFIG.MIN_POSITION_VALUE} (Rule 5).` };
   }
+
+  // Merge into an existing row instead of creating a duplicate ticker row.
+  const existingRow = findTickerRow(sheet, label);
+  if (existingRow !== -1) {
+    const accounts = getAccountColumns(sheet);
+    const col = accounts[v.account];
+    sheet.getRange(existingRow, CONFIG.PRICE_COL).setValue(v.price);
+    if (col) {
+      const cur = sheet.getRange(existingRow, col).getValue();
+      sheet.getRange(existingRow, col).setValue((typeof cur === 'number' ? cur : 0) + storedQty);
+    }
+    let costNote = '';
+    if (v.avgCost !== null && !isNaN(v.avgCost)) {
+      if (getHelperAvgCost(sheet, label, v.account) === null) {
+        setHelperAvgCost(sheet, label, v.account, v.avgCost);
+      } else {
+        costNote = ' (kept existing avg cost)';
+      }
+    }
+    applyCostBasisFormulas(sheet);
+    recalculateGainLoss();
+    recalculateTotals(sheet);
+    formatGainLossColumns(sheet);
+    return { ok: true, message: `Merged into existing ${label} at row ${existingRow} — qty added to ${v.account}${costNote}.` };
+  }
+
   const currentSections = getSectionRows(sheet);
   const section = currentSections.find(s => s.name === v.section);
   if (!section) return { ok: false, message: `Section "${v.section}" not found.` };
@@ -1469,7 +1619,31 @@ function applyCleanupRules() {
 function applyRule1And2(sheet, log) {
   log = log || [];
   const today = new Date(); today.setHours(0,0,0,0);
-  const rows = getAllPositionRows(sheet);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  // ---- Batched reads: labels, prices, and the whole account qty block. ----
+  const colA = sheet.getRange(2, CONFIG.TICKER_COL, lastRow - 1, 1).getValues();
+  const colB = sheet.getRange(2, CONFIG.PRICE_COL, lastRow - 1, 1).getValues();
+  const accounts = getAccountColumns(sheet);
+  const acctCols = Object.values(accounts).sort((a, b) => a - b);
+  const colToK = {};
+  acctCols.forEach((c, i) => { colToK[c] = i; });
+  let qtyBlock = [];
+  if (acctCols.length > 0) {
+    const span = acctCols[acctCols.length - 1] - acctCols[0] + 1;
+    qtyBlock = sheet.getRange(2, acctCols[0], lastRow - 1, span).getValues();
+  }
+
+  // Same filter as getAllPositionRows: ticker present AND price present.
+  const rows = [];
+  for (let i = 0; i < colA.length; i++) {
+    const t = String(colA[i][0] || '').trim();
+    const p = colB[i][0];
+    if (!t || p === '' || p === null) continue;
+    rows.push({ row: i + 2, ticker: t, price: p });
+  }
+
   const toDelete = [];
   const tickersToRemove = [];
 
@@ -1486,21 +1660,25 @@ function applyRule1And2(sheet, log) {
       }
     }
   }
-  const accounts = getAccountColumns(sheet);
-  const acctCols = Object.values(accounts);
-  for (const r of rows) {
-    if (toDelete.indexOf(r.row) !== -1) continue;
-    const price = sheet.getRange(r.row, CONFIG.PRICE_COL).getValue();
-    if (price === '' || price === null || isNaN(price)) continue;
-    let totalQty = 0;
-    for (const c of acctCols) {
-      const v = sheet.getRange(r.row, c).getValue();
-      if (typeof v === 'number') totalQty += v;
-    }
-    const value = price * totalQty;
-    if (value < CONFIG.MIN_POSITION_VALUE) {
-      toDelete.push(r.row); tickersToRemove.push(r.ticker);
-      log.push(`Rule 1: ${r.ticker} value $${value.toFixed(2)} — removed`);
+
+  // Rule 1 needs account quantities to compute value. With zero account
+  // columns the value is unknowable — skip instead of deleting everything
+  // (the old code computed value = price × 0 and removed all priced rows).
+  if (acctCols.length > 0) {
+    for (const r of rows) {
+      if (toDelete.indexOf(r.row) !== -1) continue;
+      const price = r.price;
+      if (price === '' || price === null || isNaN(price)) continue;
+      let totalQty = 0;
+      for (const c of acctCols) {
+        const v = qtyBlock[r.row - 2][colToK[c]];
+        if (typeof v === 'number') totalQty += v;
+      }
+      const value = price * totalQty;
+      if (value < CONFIG.MIN_POSITION_VALUE) {
+        toDelete.push(r.row); tickersToRemove.push(r.ticker);
+        log.push(`Rule 1: ${r.ticker} value $${value.toFixed(2)} — removed`);
+      }
     }
   }
   const pairs = toDelete.map((row, i) => ({ row, ticker: tickersToRemove[i] }));
@@ -1511,17 +1689,18 @@ function applyRule1And2(sheet, log) {
   }
 
   // --- SMART BLANK ROW CLEANUP ---
-  const lastRow = sheet.getLastRow();
-  if (lastRow >= 2) {
-    const data = sheet.getRange(1, 1, lastRow, 2).getValues();
-    const bgs = sheet.getRange(1, 1, lastRow, 1).getBackgrounds();
+  // Fresh row count: rows were deleted above.
+  const sweepLast = sheet.getLastRow();
+  if (sweepLast >= 2) {
+    const data = sheet.getRange(1, 1, sweepLast, 2).getValues();
+    const bgs = sheet.getRange(1, 1, sweepLast, 1).getBackgrounds();
     let deletedCount = 0;
 
     // Tracks what is immediately beneath the row we are checking
     let nextRowType = 'EOF';
 
     // Sweep from bottom to top (prevents row index shifting issues)
-    for (let i = lastRow - 1; i >= 1; i--) {
+    for (let i = sweepLast - 1; i >= 1; i--) {
       const rowNum = i + 1;
       const ticker = String(data[i][0]).trim();
       const price = data[i][1];
@@ -1624,51 +1803,62 @@ function formatGainLossColumns(sheet) {
   sheet.getRange(2, CONFIG.GAIN_PCT_COL, lastRow - 1).setNumberFormat("0%;-0%");
 }
 
-function getCategoryFromClaude(ticker, existingCategories) {
+// Categorize MANY tickers in ONE API call (returns {TICKER: category}).
+// The old per-ticker version fired a synchronous UrlFetchApp per unknown
+// ticker while the Bulk Add dialog rendered — hanging or timing out on
+// large imports. Unknown tickers are now resolved up front in a single call.
+function getCategoriesFromClaude(tickers, existingCategories) {
+  const out = {};
+  const uniq = [...new Set((tickers || []).map(t => String(t).toUpperCase()))];
+  if (!uniq.length) return out;
+
   const apiKey = PropertiesService.getScriptProperties().getProperty(CONFIG.API_KEY_PROPERTY);
-  if (!apiKey) return "Small Themes/Other"; // Fallback if no API key is set
+  if (!apiKey) {
+    uniq.forEach(t => { out[t] = 'Small Themes/Other'; });
+    return out;
+  }
 
   const prompt = `You are a financial portfolio categorization assistant.
-Here are the ONLY allowed categories in the user's portfolio: [${existingCategories.join(', ')}].
+Here are the ONLY allowed categories: [${existingCategories.join(', ')}].
 
-I have a new position with the ticker/entity: ${ticker}.
-Based on the company's primary industry and operations, which of the provided categories does it best fit into?
+For EACH ticker below, pick the single best-fitting category from that list, based on the company's primary industry and operations.
+
+Tickers: [${uniq.join(', ')}]
 
 Rules:
-1. You must choose ONE category from the exact list provided.
-2. If it does not clearly fit into a specific sector, categorize it as "Small Themes/Other".
-3. Return ONLY the exact name of the category. Do not include any other text, punctuation, or explanation.`;
-
-  const payload = {
-    "model": CONFIG.API_MODEL,
-    "max_tokens": 50,
-    "messages": [
-      {"role": "user", "content": prompt}
-    ]
-  };
-
-  const options = {
-    "method": "post",
-    "headers": {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json"
-    },
-    "payload": JSON.stringify(payload),
-    "muteHttpExceptions": true
-  };
+1. Reply with ONLY a JSON object mapping each ticker to exactly one category name from the list, e.g. {"AAPL":"Technology","XOM":"Energy"}.
+2. If a ticker does not clearly fit a specific sector, map it to "Small Themes/Other".
+3. No markdown, no commentary — just the JSON object.`;
 
   try {
-    const response = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", options);
-    const json = JSON.parse(response.getContentText());
-    if (json.content && json.content.length > 0) {
-      const suggestedCategory = json.content[0].text.trim();
-      if (existingCategories.includes(suggestedCategory)) {
-        return suggestedCategory;
-      }
-    }
+    const resp = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: getApiModel(),
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      muteHttpExceptions: true
+    });
+    const json = JSON.parse(resp.getContentText());
+    const txt = (json.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+    const m = txt.match(/\{[\s\S]*\}/);
+    const map = m ? JSON.parse(m[0]) : {};
+    uniq.forEach(t => {
+      const cat = map[t];
+      out[t] = existingCategories.includes(cat) ? cat : 'Small Themes/Other';
+    });
   } catch (e) {
-    Logger.log("Claude API Error: " + e.toString());
+    Logger.log('Claude batch categorization failed: ' + e);
+    uniq.forEach(t => { if (!out[t]) out[t] = 'Small Themes/Other'; });
   }
-  return "Small Themes/Other";
+  return out;
+}
+
+// Backward-compatible single-ticker wrapper.
+function getCategoryFromClaude(ticker, existingCategories) {
+  return getCategoriesFromClaude([ticker], existingCategories)[String(ticker).toUpperCase()]
+    || 'Small Themes/Other';
 }
