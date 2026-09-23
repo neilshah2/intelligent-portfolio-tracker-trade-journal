@@ -227,7 +227,7 @@ Return [] if nothing parseable. Output JUST the JSON array.`;
 function callClaudeAPIForJournal(messages, systemPromptOverride) {
   const apiKey = getApiKey(); // reused from Holdings v7 file
   const payload = {
-    model: CONFIG.API_MODEL, // reused CONFIG from Holdings v7 file
+    model: getApiModel(), // reused from Holdings file ( honors API_MODEL_OVERRIDE )
     max_tokens: 4096,
     system: systemPromptOverride || buildJournalSystemPrompt(),
     messages: [{ role: 'user', content: messages }]
